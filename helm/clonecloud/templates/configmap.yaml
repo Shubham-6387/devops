@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clonecloud-config
+  namespace: {{ .Values.global.namespace | default "clonecloud-main" }}
+data:
+  MONGODB_DB_NAME: {{ .Values.mongodb.databaseName | quote }}
+  # In Kubernetes environment, React runs on the client browser.
+  # So VITE_API_URL should point to the external NodePort or Ingress IP of the backend service.
+  # For local/NodePort setup, this config maps the backend service target URL.
+  VITE_API_URL: "http://clonecloud-backend-service:5000"

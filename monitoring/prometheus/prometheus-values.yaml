@@ -1,0 +1,14 @@
+# Custom Prometheus values for CloneCloud
+server:
+  persistentVolume:
+    enabled: false
+  service:
+    type: ClusterIP
+    servicePort: 9090
+
+extraScrapeConfigs: |
+  - job_name: 'clonecloud-backend'
+    scrape_interval: 5s
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['clonecloud-backend-service:5000']

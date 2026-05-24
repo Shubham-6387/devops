@@ -1,0 +1,52 @@
+# Default values for CloneCloud Helm Chart
+
+global:
+  namespace: clonecloud-main
+
+# MongoDB Configuration
+mongodb:
+  image: mongo
+  tag: "6.0"
+  port: 27017
+  storageSize: 2Gi
+  # Credentials
+  rootUser: dbadmin
+  rootPassword: SuperSecurePassword123
+  databaseName: clonecloud
+
+# Node.js Backend Configuration
+backend:
+  replicaCount: 2
+  image: clonecloud/backend
+  tag: latest
+  imagePullPolicy: IfNotPresent
+  port: 5000
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 80
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+# React Frontend Configuration
+frontend:
+  replicaCount: 2
+  image: clonecloud/frontend
+  tag: latest
+  imagePullPolicy: IfNotPresent
+  port: 80
+  serviceType: NodePort
+  nodePort: 30080
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi

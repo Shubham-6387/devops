@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: clonecloud-backend-service
+  namespace: {{ .Values.global.namespace | default "clonecloud-main" }}
+  labels:
+    app: clonecloud
+    component: backend
+spec:
+  ports:
+    - port: {{ .Values.backend.port }}
+      targetPort: {{ .Values.backend.port }}
+      protocol: TCP
+      name: http
+  selector:
+    app: clonecloud
+    component: backend
+  type: ClusterIP

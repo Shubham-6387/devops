@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clonecloud-backend
+  namespace: {{ .Values.global.namespace | default "clonecloud-main" }}
+  labels:
+    app: clonecloud
+    component: backend
+spec:
+  replicas: {{ .Values.backend.replicaCount }}
+  selector:
+    matchLabels:
+      app: clonecloud
+      component: backend
+  template:
+    metadata:
+      labels:
+        app: clonecloud
+        component: backend
+    spec:
+      containers:
+        - name: backend
+          image: "{{ .Values.backend.image }}:{{ .Values.backend.tag }}"
+          imagePullPolicy: {{ .Values.backend.imagePullPolicy }}
+          ports:
+            - containerPort: {{ .Values.backend.port }}
+              name: http
+          env:
+            - name: PORT
+              value: "{{ .Values.backend.port }}"
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: clonecloud-mongodb-secret
+                  key: mongodb-uri
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.backend.port }}
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.backend.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.backend.resources | nindent 12 }}

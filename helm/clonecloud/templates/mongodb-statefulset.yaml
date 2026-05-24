@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: clonecloud-mongodb
+  namespace: {{ .Values.global.namespace | default "clonecloud-main" }}
+  labels:
+    app: clonecloud
+    component: mongodb
+spec:
+  serviceName: clonecloud-mongodb-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clonecloud
+      component: mongodb
+  template:
+    metadata:
+      labels:
+        app: clonecloud
+        component: mongodb
+    spec:
+      containers:
+        - name: mongodb
+          image: "{{ .Values.mongodb.image }}:{{ .Values.mongodb.tag }}"
+          ports:
+            - containerPort: {{ .Values.mongodb.port }}
+              name: mongodb
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: clonecloud-mongodb-secret
+                  key: mongodb-root-username
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: clonecloud-mongodb-secret
+                  key: mongodb-root-password
+          volumeMounts:
+            - name: mongodb-data
+              mountPath: /data/db
+  volumeClaimTemplates:
+    - metadata:
+        name: mongodb-data
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        resources:
+          requests:
+            storage: {{ .Values.mongodb.storageSize }}
