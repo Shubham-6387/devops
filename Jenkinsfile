@@ -68,17 +68,17 @@ pipeline {
         }
 
         stage('Docker Push / Import') {
-            steps {
-                echo 'Pushing Docker images to container registry (or importing into local containerd)...'
-                // In local systems (e.g. k3s / minikube), we often import images directly:
-                // sh "k3s ctr images import ..." or "minikube image load ..."
-                // Here we simulate push to registry
-                sh """
-                    echo "Tagging and pushing images to ${REGISTRY}..."
-                    echo "[PUSH SUCCESS] backend:latest and frontend:latest pushed to registry."
-                """
-            }
-        }
+    steps {
+        echo 'Loading Docker images into Kind Kubernetes cluster...'
+
+        sh """
+            kind load docker-image containerd.io/clonecloud/backend:latest --name clonecloud
+            kind load docker-image containerd.io/clonecloud/frontend:latest --name clonecloud
+
+            echo "[IMPORT SUCCESS] Images loaded into Kind cluster."
+        """
+    }
+}
 
         stage('Helm Deploy') {
             steps {
