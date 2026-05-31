@@ -63,11 +63,20 @@ fi
 # STEP 3 — Load Docker images into Kind
 # ─────────────────────────────────────────────────
 log "Step 3/6 — Loading Docker images into Kind cluster..."
-docker tag devopsproject-backend:latest clonecloud/backend:latest 2>/dev/null || true
+
+# Tag from docker compose output names (project folder auto-prefixes images)
+docker tag clonecloud-devops--backend:latest  powerhub/backend:latest  2>/dev/null || true
+docker tag clonecloud-devops--frontend:latest powerhub/frontend:latest 2>/dev/null || true
+# Also try legacy/alternate names just in case
+docker tag devopsproject-backend:latest  clonecloud/backend:latest  2>/dev/null || true
 docker tag devopsproject-frontend:latest clonecloud/frontend:latest 2>/dev/null || true
-kind load docker-image clonecloud/backend:latest --name clonecloud
-kind load docker-image clonecloud/frontend:latest --name clonecloud
+docker tag powerhub-backend:latest  powerhub/backend:latest  2>/dev/null || true
+docker tag powerhub-frontend:latest powerhub/frontend:latest 2>/dev/null || true
+
+kind load docker-image powerhub/backend:latest  --name clonecloud
+kind load docker-image powerhub/frontend:latest --name clonecloud
 success "Images loaded into Kind cluster."
+
 
 # ─────────────────────────────────────────────────
 # STEP 4 — Deploy Helm Chart to Kubernetes
@@ -157,7 +166,7 @@ echo -e "${GREEN}║${NC}  Service          URL                         Credenti
 echo -e "${GREEN}╠══════════════════════════════════════════════════════════════════╣${NC}"
 echo -e "${GREEN}║${NC}  Frontend App     http://localhost:3000         —                  ${GREEN}║${NC}"
 echo -e "${GREEN}║${NC}  Frontend (K8s)   http://localhost:30080         —                  ${GREEN}║${NC}"
-echo -e "${GREEN}║${NC}  Backend API      http://localhost:5000/health   —                  ${GREEN}║${NC}"
+echo -e "${GREEN}║${NC}  Backend API      http://localhost:5000/   —                  ${GREEN}║${NC}"
 echo -e "${GREEN}║${NC}  Jenkins          http://localhost:8080          admin/see logs     ${GREEN}║${NC}"
 echo -e "${GREEN}║${NC}  Prometheus       http://localhost:9090          —                  ${GREEN}║${NC}"
 echo -e "${GREEN}║${NC}  Grafana          http://localhost:3001          admin / admin      ${GREEN}║${NC}"

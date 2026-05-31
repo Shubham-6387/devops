@@ -1,0 +1,17 @@
+==========================================
+  POWERHUB DEVSECOPS SECURITY SCAN REPORT
+  Generated: $(date)
+==========================================
+
+── npm audit: Backend ────────────────────
+Critical: 0
+High:     5
+Medium:   3
+
+── npm audit: Frontend ────────────────────
+Critical: 2
+High:     8
+Medium:   10
+
+── Trivy Container Scan ──────────────────────────
+[INFO] Trivy filesystem scan complete.

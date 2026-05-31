@@ -4,18 +4,23 @@ metadata:
   name: clonecloud-frontend
   namespace: {{ .Values.global.namespace | default "clonecloud-main" }}
   labels:
-    app: clonecloud
+    app: {{ .Values.global.appName | default "powerhub" }}
     component: frontend
 spec:
   replicas: {{ .Values.frontend.replicaCount }}
   selector:
     matchLabels:
-      app: clonecloud
+      app: {{ .Values.global.appName | default "powerhub" }}
       component: frontend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   template:
     metadata:
       labels:
-        app: clonecloud
+        app: {{ .Values.global.appName | default "powerhub" }}
         component: frontend
     spec:
       containers:
@@ -42,6 +47,12 @@ spec:
               path: /
               port: {{ .Values.frontend.port }}
             initialDelaySeconds: 10
+            periodSeconds: 10
+          startupProbe:
+            httpGet:
+              path: /
+              port: {{ .Values.frontend.port }}
+            failureThreshold: 30
             periodSeconds: 10
           resources:
             {{- toYaml .Values.frontend.resources | nindent 12 }}

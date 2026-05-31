@@ -3,9 +3,14 @@ kind: ConfigMap
 metadata:
   name: clonecloud-config
   namespace: {{ .Values.global.namespace | default "clonecloud-main" }}
+  labels:
+    app: {{ .Values.global.appName | default "powerhub" }}
 data:
   MONGODB_DB_NAME: {{ .Values.mongodb.databaseName | quote }}
-  # In Kubernetes environment, React runs on the client browser.
-  # So VITE_API_URL should point to the external NodePort or Ingress IP of the backend service.
-  # For local/NodePort setup, this config maps the backend service target URL.
-  VITE_API_URL: "http://clonecloud-backend-service:5000"
+  # VITE_API_URL is a build-time ARG in the Dockerfile, not runtime env.
+  # At runtime, Nginx proxies /api to the backend service.
+  # This config key is used for documentation/reference only.
+  VITE_API_URL: "/api"
+  # Node environment
+  NODE_ENV: {{ .Values.backend.nodeEnv | default "production" | quote }}
+

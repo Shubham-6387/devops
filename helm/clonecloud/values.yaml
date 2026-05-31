@@ -1,7 +1,8 @@
-# Default values for CloneCloud Helm Chart
+# Default values for PowerHub DevSecOps Helm Chart
 
 global:
   namespace: clonecloud-main
+  appName: powerhub
 
 # MongoDB Configuration
 mongodb:
@@ -12,15 +13,19 @@ mongodb:
   # Credentials
   rootUser: dbadmin
   rootPassword: SuperSecurePassword123
-  databaseName: clonecloud
+  databaseName: powerhub
 
-# Node.js Backend Configuration
+# PowerHub Backend (Node.js / Express) Configuration
 backend:
   replicaCount: 2
-  image: clonecloud/backend
+  image: powerhub/backend
   tag: latest
   imagePullPolicy: IfNotPresent
   port: 5000
+  # PowerHub-specific environment variables (stored as K8s Secret)
+  jwtSecret: "powerhub_jwt_super_secret_change_in_prod"
+  foodApiBase: "https://world.openfoodfacts.org"
+  nodeEnv: "production"
   hpa:
     enabled: true
     minReplicas: 2
@@ -34,10 +39,10 @@ backend:
       cpu: 100m
       memory: 128Mi
 
-# React Frontend Configuration
+# PowerHub Frontend (React / Nginx) Configuration
 frontend:
   replicaCount: 2
-  image: clonecloud/frontend
+  image: powerhub/frontend
   tag: latest
   imagePullPolicy: IfNotPresent
   port: 80

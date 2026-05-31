@@ -1,44 +1,112 @@
 version: '3.8'
 
 services:
+
+  # ── MongoDB ────────────────────────────────────────────────
   mongodb:
     image: mongo:6.0
     container_name: clonecloud-mongodb
     ports:
       - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: dbadmin
+      MONGO_INITDB_ROOT_PASSWORD: SuperSecurePassword123
+      MONGO_INITDB_DATABASE: powerhub
     volumes:
       - mongodb_data:/data/db
     networks:
       - clonecloud-network
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
 
+  # ── PowerHub Backend (Express API) ────────────────────────
   backend:
     build:
-      context: ./backend
+      context: ./powerhub/server
       dockerfile: Dockerfile
     container_name: clonecloud-backend
     ports:
       - "5000:5000"
     environment:
-      - PORT=5000
-      - MONGO_URI=mongodb://mongodb:27017/clonecloud
+      PORT: 5000
+      NODE_ENV: production
+      MONGO_URI: mongodb://dbadmin:SuperSecurePassword123@mongodb:27017/powerhub?authSource=admin
+      JWT_SECRET: powerhub_jwt_super_secret_change_in_prod
+      FOOD_API_BASE: https://world.openfoodfacts.org
     depends_on:
-      - mongodb
+      mongodb:
+        condition: service_healthy
+    networks:
+      - clonecloud-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ── PowerHub Frontend (React + Nginx) ─────────────────────
+  frontend:
+    build:
+      context: ./powerhub/client
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ""
+    container_name: clonecloud-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
     networks:
       - clonecloud-network
     restart: unless-stopped
 
-  frontend:
+  dashboard-api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: clonecloud-dashboard-api
+    ports:
+      - "5001:5000"
+    environment:
+      PORT: 5000
+      NODE_ENV: production
+      MONGO_URI: mongodb://dbadmin:SuperSecurePassword123@mongodb:27017/clonecloud?authSource=admin
+      JENKINS_URL: http://host.docker.internal:8080
+      JENKINS_USER: admin
+      JENKINS_TOKEN: ""
+      KUBECTL_ENABLED: "false"
+      PROMETHEUS_URL: http://host.docker.internal:9090
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - clonecloud-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+  # ── CloneCloud DevSecOps Dashboard Frontend ───────────────
+  dashboard-ui:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: clonecloud-frontend
+    container_name: clonecloud-dashboard-ui
     ports:
-      - "3000:80"
+      - "3001:80"
     environment:
-      - VITE_API_URL=http://localhost:5000
+      VITE_API_URL: http://localhost:5001
     depends_on:
-      - backend
+      - dashboard-api
     networks:
       - clonecloud-network
     restart: unless-stopped
