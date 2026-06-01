@@ -11,10 +11,13 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY package.json ./
 COPY src/ ./src/
 
+# Install Docker CLI + fuser (psmisc) + lsof so crash-simulate can stop containers
+RUN apk add --no-cache docker-cli psmisc lsof
+
 ENV PORT=5000
 ENV NODE_ENV=production
 
 EXPOSE 5000
 
-USER node
+# Run as root so docker socket access works (docker.sock is mounted at runtime)
 CMD ["node", "src/server.js"]

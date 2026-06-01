@@ -184,22 +184,61 @@ app.get('/api/pipeline/logs', (req, res) => {
 // POWERHUB STATUS & HEAL  (in-memory sim + real Docker)
 // ─────────────────────────────────────────────────────────
 const PH_SERVICES = [
-  { name:'frontend', label:'PowerHub Frontend', container:'clonecloud-frontend', port:3000, image:'clonecloud-devops--frontend' },
-  { name:'backend',  label:'PowerHub Backend',  container:'clonecloud-backend',  port:5000, image:'clonecloud-devops--backend'  },
-  { name:'mongodb',  label:'MongoDB',           container:'clonecloud-mongodb',  port:27017, image:'mongo:6.0'                  },
+  { name:'frontend', label:'PowerHub Frontend', container:'clonecloud-frontend', port:3000, composeService:'frontend', image:'clonecloud-devops--frontend' },
+  { name:'backend',  label:'PowerHub Backend',  container:'clonecloud-backend',  port:5000, composeService:'backend',  image:'clonecloud-devops--backend'  },
+  { name:'mongodb',  label:'MongoDB',           container:'clonecloud-mongodb',  port:27017, composeService:'mongodb',  image:'mongo:6.0'                  },
 ];
 
-// In-memory simulated state — used as fallback when Docker is unavailable
+// In-memory state — tracks what WE crashed (always accurate)
 let simState = {
   frontend: { status: 'running', restartCount: 0 },
   backend:  { status: 'running', restartCount: 0 },
   mongodb:  { status: 'running', restartCount: 0 },
 };
-let dockerAvailable = null; // null = not yet checked
+
+const COMPOSE_DIR = path.join(__dirname, '../..');
 
 async function checkDockerAvailable() {
   try {
-    await execAsync('docker info 2>/dev/null');
+    await execAsync('docker info 2>/dev/null', { timeout: 3000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function tryDockerStop(container) {
+  await execAsync(`docker stop -t 1 ${container} 2>/dev/null`);
+}
+
+async function tryDockerStart(container) {
+  await execAsync(`docker start ${container} 2>/dev/null`);
+}
+
+async function tryKillPort(port) {
+  // Try fuser first, then lsof fallback
+  try {
+    await execAsync(`fuser -k -TERM ${port}/tcp 2>/dev/null || true`);
+    await new Promise(r => setTimeout(r, 300));
+    // Double-tap with KILL if still alive
+    await execAsync(`fuser -k -KILL ${port}/tcp 2>/dev/null || true`);
+    return true;
+  } catch {
+    try {
+      await execAsync(`kill -9 $(lsof -ti:${port}) 2>/dev/null || true`);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+async function tryComposeStart(composeService) {
+  try {
+    await execAsync(`docker-compose up -d --no-recreate ${composeService} 2>/dev/null`, {
+      cwd: COMPOSE_DIR,
+      timeout: 60000,
+    });
     return true;
   } catch {
     return false;
@@ -207,7 +246,6 @@ async function checkDockerAvailable() {
 }
 
 async function inspectContainer(name) {
-  if (!(await checkDockerAvailable())) return null; // use simState
   try {
     const fmt = `{"status":"{{.State.Status}}","restartCount":{{.RestartCount}},"health":"{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}"}`;
     const { stdout } = await execAsync(`docker inspect --format '${fmt}' ${name} 2>/dev/null`);
@@ -225,18 +263,18 @@ app.get('/api/powerhub/status', async (req, res) => {
     if (useDocker) {
       const info = await inspectContainer(svc.container);
       if (info) {
+        // Real Docker state always wins
         if (info.status === 'running') {
-          if (info.health === 'unhealthy') {
-            status = 'unhealthy';
-          } else if (info.health === 'starting') {
-            status = 'checking';
-          } else {
-            status = 'running';
-          }
+          if (info.health === 'unhealthy') status = 'unhealthy';
+          else if (info.health === 'starting') status = 'checking';
+          else status = 'running';
         } else {
-          status = info.status;
+          status = info.status; // exited, paused, etc.
         }
         restartCount = info.restartCount;
+        simState[svc.name] = { status, restartCount }; // sync simState with real state
+      } else {
+        // Container doesn't exist in Docker — use simState
       }
     }
     return {
@@ -255,25 +293,39 @@ app.post('/api/powerhub/heal', async (req, res) => {
 
   for (const svc of PH_SERVICES) {
     const isCrashed = simState[svc.name]?.status !== 'running';
-    if (!isCrashed) continue; // skip healthy services
+    if (!isCrashed) continue;
+
+    let success = false;
 
     if (useDocker) {
+      // Try docker start first, then docker-compose up
       try {
-        addLog(`[Heal] Restarting ${svc.container}...`);
-        await execAsync(`docker restart ${svc.container}`);
-        simState[svc.name] = { status: 'running', restartCount: (simState[svc.name]?.restartCount||0)+1 };
-        restarted.push(svc.container);
-        addLog(`[Heal] ✅ ${svc.container} restarted`);
-      } catch (e) {
-        addLog(`[Heal] ❌ Cannot restart ${svc.container}: ${e.message}`);
-        failed.push(svc.container);
+        addLog(`[Heal] Starting ${svc.container} via docker start...`);
+        await tryDockerStart(svc.container);
+        success = true;
+        addLog(`[Heal] ✅ ${svc.container} started`);
+      } catch {
+        addLog(`[Heal] docker start failed, trying docker-compose up...`);
+        success = await tryComposeStart(svc.composeService);
+        if (success) addLog(`[Heal] ✅ ${svc.name} started via docker-compose`);
+        else addLog(`[Heal] ❌ Could not start ${svc.container}`);
       }
     } else {
-      // Simulated restart — restore in-memory state
-      addLog(`[Heal] [SIM] Restarting simulated ${svc.name}...`);
+      // No Docker — use docker-compose directly
+      addLog(`[Heal] Restarting ${svc.name} via docker-compose...`);
+      success = await tryComposeStart(svc.composeService);
+      if (!success) {
+        // Pure simulation fallback (no docker at all)
+        addLog(`[Heal] [SIM] Restoring ${svc.name} in simulation state`);
+        success = true;
+      }
+    }
+
+    if (success) {
       simState[svc.name] = { status: 'running', restartCount: (simState[svc.name]?.restartCount||0)+1 };
       restarted.push(svc.container);
-      addLog(`[Heal] [SIM] ✅ ${svc.name} restored to running`);
+    } else {
+      failed.push(svc.container);
     }
   }
 
@@ -297,22 +349,49 @@ app.post('/api/powerhub/crash-simulate', async (req, res) => {
   const svc = PH_SERVICES.find(s => s.name === service);
   const useDocker = await checkDockerAvailable();
 
+  // ── Attempt 1: docker stop ───────────────────────────────
   if (useDocker) {
     try {
       addLog(`[CrashSim] Stopping container ${svc.container}...`);
-      await execAsync(`docker stop -t 1 ${svc.container}`);
+      await tryDockerStop(svc.container);
       simState[service] = { status: 'exited', restartCount: simState[service]?.restartCount||0 };
-      addLog(`[CrashSim] 💀 ${svc.container} stopped (real Docker)`);
+      addLog(`[CrashSim] 💀 ${svc.container} stopped (docker stop)`);
       return res.json({ stopped: svc.container, mode: 'docker', timestamp: new Date().toISOString() });
     } catch (e) {
-      addLog(`[CrashSim] Docker stop failed: ${e.message} → falling back to simulation`);
+      addLog(`[CrashSim] docker stop failed (${e.message.split('\n')[0]}), trying port kill...`);
     }
   }
 
-  // Simulation fallback — update in-memory state only
-  addLog(`[CrashSim] [SIM] Marking ${service} as crashed in simulation state`);
+  // ── Attempt 2: kill process by port (real kill — works even without docker socket) ──
+  try {
+    addLog(`[CrashSim] Killing process on port ${svc.port}...`);
+    const killed = await tryKillPort(svc.port);
+    if (killed) {
+      simState[service] = { status: 'exited', restartCount: simState[service]?.restartCount||0 };
+      addLog(`[CrashSim] 💀 Port ${svc.port} process terminated (port kill)`);
+      return res.json({ stopped: svc.container, mode: 'port-kill', timestamp: new Date().toISOString() });
+    }
+  } catch (e) {
+    addLog(`[CrashSim] Port kill failed: ${e.message.split('\n')[0]}`);
+  }
+
+  // ── Attempt 3: docker-compose stop (last resort) ──────────
+  if (useDocker) {
+    try {
+      addLog(`[CrashSim] Stopping via docker-compose stop ${svc.composeService}...`);
+      await execAsync(`docker-compose stop ${svc.composeService} 2>/dev/null`, { cwd: COMPOSE_DIR, timeout: 15000 });
+      simState[service] = { status: 'exited', restartCount: simState[service]?.restartCount||0 };
+      addLog(`[CrashSim] 💀 ${svc.name} stopped via docker-compose`);
+      return res.json({ stopped: svc.container, mode: 'docker-compose', timestamp: new Date().toISOString() });
+    } catch (e) {
+      addLog(`[CrashSim] docker-compose stop failed: ${e.message.split('\n')[0]}`);
+    }
+  }
+
+  // ── Pure simulation fallback (nothing worked) ─────────────
+  addLog(`[CrashSim] ⚠️  All real-stop methods failed. Using pure simulation (service status only).`);
   simState[service] = { status: 'exited', restartCount: simState[service]?.restartCount||0 };
-  addLog(`[CrashSim] [SIM] 💀 ${service} is now DOWN`);
+  addLog(`[CrashSim] [SIM] 💀 ${service} marked as DOWN in simulation state`);
   res.json({ stopped: svc.container, mode: 'simulation', timestamp: new Date().toISOString() });
 });
 

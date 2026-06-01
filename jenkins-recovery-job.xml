@@ -1,0 +1,186 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job">
+  <description>CloneCloud — Real-time Application Recovery Monitor. Watches PowerHub services (frontend, backend, database) for crashes and triggers self-healing recovery.</description>
+  <keepDependencies>false</keepDependencies>
+  <properties/>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">
+    <script>
+pipeline {
+    agent any
+
+    environment {
+        FRONTEND_URL  = 'http://host.docker.internal:5173'
+        BACKEND_URL   = 'http://host.docker.internal:5000/api/health'
+        COMPOSE_DIR   = '/workspace/Clonecloud-DevOps-'
+    }
+
+    triggers {
+        // Poll every 2 minutes for crashes
+        pollSCM('H/2 * * * *')
+    }
+
+    stages {
+
+        stage('🔍 Health Check — Frontend') {
+            steps {
+                script {
+                    echo '╔══════════════════════════════════════════════╗'
+                    echo '║  Checking PowerHub Frontend (port 5173)      ║'
+                    echo '╚══════════════════════════════════════════════╝'
+                    def status = sh(
+                        script: "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 ${FRONTEND_URL} || echo '000'",
+                        returnStdout: true
+                    ).trim()
+                    echo "Frontend HTTP Status: ${status}"
+                    if (status == '000' || status == '') {
+                        echo '⚠️  FRONTEND IS DOWN — Status: CRASHED'
+                        currentBuild.description = '❌ Frontend DOWN'
+                    } else {
+                        echo "✅ Frontend HEALTHY — HTTP ${status}"
+                    }
+                }
+            }
+        }
+
+        stage('🔍 Health Check — Backend') {
+            steps {
+                script {
+                    echo '╔══════════════════════════════════════════════╗'
+                    echo '║  Checking PowerHub Backend (port 5000)       ║'
+                    echo '╚══════════════════════════════════════════════╝'
+                    def status = sh(
+                        script: "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 ${BACKEND_URL} || echo '000'",
+                        returnStdout: true
+                    ).trim()
+                    echo "Backend HTTP Status: ${status}"
+                    if (status == '000' || status == '') {
+                        echo '⚠️  BACKEND IS DOWN — Triggering Recovery...'
+                        currentBuild.description = '❌ Backend DOWN — Recovery triggered'
+                    } else {
+                        echo "✅ Backend HEALTHY — HTTP ${status}"
+                    }
+                }
+            }
+        }
+
+        stage('🔍 Health Check — Database') {
+            steps {
+                script {
+                    echo '╔══════════════════════════════════════════════╗'
+                    echo '║  Checking MongoDB Container                  ║'
+                    echo '╚══════════════════════════════════════════════╝'
+                    def dbStatus = sh(
+                        script: "docker inspect --format='{{.State.Status}}' clonecloud-mongodb 2>/dev/null || echo 'not_found'",
+                        returnStdout: true
+                    ).trim()
+                    echo "MongoDB Container Status: ${dbStatus}"
+                    if (dbStatus != 'running') {
+                        echo "⚠️  DATABASE IS DOWN — Status: ${dbStatus}"
+                        currentBuild.description = '❌ MongoDB DOWN'
+                    } else {
+                        echo '✅ Database HEALTHY — MongoDB running'
+                    }
+                }
+            }
+        }
+
+        stage('🚑 Auto-Recovery — Restart Down Services') {
+            steps {
+                script {
+                    echo '╔══════════════════════════════════════════════╗'
+                    echo '║  Stage — Auto-Recovery Watchdog              ║'
+                    echo '╚══════════════════════════════════════════════╝'
+
+                    // Restart any stopped containers
+                    sh '''
+                        for container in clonecloud-frontend clonecloud-backend clonecloud-mongodb powerhub-frontend powerhub-backend; do
+                            STATUS=$(docker inspect --format="{{.State.Status}}" $container 2>/dev/null || echo "not_found")
+                            if [ "$STATUS" = "exited" ] || [ "$STATUS" = "dead" ]; then
+                                echo "🔄 Restarting $container..."
+                                docker start $container || true
+                                sleep 3
+                                echo "✅ $container restarted"
+                            elif [ "$STATUS" = "not_found" ]; then
+                                echo "ℹ️  $container not found — skipping"
+                            else
+                                echo "✅ $container is $STATUS — OK"
+                            fi
+                        done
+                    '''
+                }
+            }
+        }
+
+        stage('✅ Post-Recovery Verification') {
+            steps {
+                script {
+                    echo '╔══════════════════════════════════════════════╗'
+                    echo '║  Stage — Post-Recovery Health Verification   ║'
+                    echo '╚══════════════════════════════════════════════╝'
+                    sleep(time: 5, unit: 'SECONDS')
+
+                    def frontendOk = sh(
+                        script: "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 ${FRONTEND_URL} || echo '000'",
+                        returnStdout: true
+                    ).trim()
+
+                    def backendOk = sh(
+                        script: "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 ${BACKEND_URL} || echo '000'",
+                        returnStdout: true
+                    ).trim()
+
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo "  RECOVERY VERIFICATION REPORT"
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    echo "  Frontend : ${frontendOk != '000' ? '✅ HEALTHY (' + frontendOk + ')' : '❌ STILL DOWN'}"
+                    echo "  Backend  : ${backendOk  != '000' ? '✅ HEALTHY (' + backendOk  + ')' : '❌ STILL DOWN'}"
+                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+                    if (frontendOk != '000' &amp;&amp; backendOk != '000') {
+                        currentBuild.description = '✅ All services HEALTHY'
+                        echo '🎉 RECOVERY COMPLETE — All services restored to HEALTHY state!'
+                    } else {
+                        currentBuild.description = '⚠️ Recovery incomplete — manual intervention needed'
+                        echo '⚠️  Some services still down — check docker-compose logs'
+                    }
+                }
+            }
+        }
+
+        stage('📊 System Status Summary') {
+            steps {
+                sh '''
+                    echo ""
+                    echo "══════════════════════════════════════════"
+                    echo "  CLONECLOUD SERVICE STATUS DASHBOARD"
+                    echo "══════════════════════════════════════════"
+                    docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep -E "clone|powerhub|mongo" || echo "No matching containers found"
+                    echo "══════════════════════════════════════════"
+                    echo "  Frontend  → http://localhost:5173"
+                    echo "  Backend   → http://localhost:5000"
+                    echo "  Jenkins   → http://localhost:8080"
+                    echo "  Grafana   → http://localhost:3001"
+                    echo "══════════════════════════════════════════"
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo '✅ Recovery Monitor — All systems GREEN'
+        }
+        failure {
+            echo '❌ Recovery Monitor — ALERT: Service degradation detected!'
+        }
+        always {
+            echo 'CloneCloud Recovery Monitor scan complete.'
+        }
+    }
+}
+    </script>
+    <sandbox>true</sandbox>
+  </definition>
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>

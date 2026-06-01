@@ -9,11 +9,20 @@ import {
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
 const POLL_MS  = 3000;
+const FETCH_TIMEOUT_MS = 5000;
 
 const apiFetch = async (path, opts = {}) => {
-  const r = await fetch(`${API_URL}${path}`, { ...opts });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const r = await fetch(`${API_URL}${path}`, { ...opts, signal: controller.signal });
+    clearTimeout(timer);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  } catch (err) {
+    clearTimeout(timer);
+    throw err;
+  }
 };
 
 const fmt   = v  => (v !== null && v !== undefined) ? v : '—';
@@ -41,6 +50,8 @@ export default function App() {
   const [crashing,     setCrashing]    = useState(false);
   const [crashTarget,  setCrashTarget] = useState('frontend');
   const [autoHeal,     setAutoHeal]    = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
+  const reconnectRef = useRef(null);
 
   const logBoxRef  = useRef(null);
   const healBoxRef = useRef(null);
@@ -50,7 +61,22 @@ export default function App() {
     try {
       const h = await apiFetch('/health');
       setHealth({ api:'connected', mongo: h.mongodb === 'Connected' ? 'connected' : 'disconnected', uptime: h.uptime || 0 });
-    } catch { setHealth(p => ({ ...p, api:'disconnected', mongo:'disconnected' })); }
+      setReconnecting(false);
+      if (reconnectRef.current) { clearInterval(reconnectRef.current); reconnectRef.current = null; }
+    } catch {
+      setHealth(p => ({ ...p, api:'disconnected', mongo:'disconnected' }));
+      if (!reconnectRef.current) {
+        setReconnecting(true);
+        reconnectRef.current = setInterval(async () => {
+          try {
+            const h = await apiFetch('/health');
+            setHealth({ api:'connected', mongo: h.mongodb === 'Connected' ? 'connected' : 'disconnected', uptime: h.uptime || 0 });
+            setReconnecting(false);
+            clearInterval(reconnectRef.current); reconnectRef.current = null;
+          } catch {}
+        }, 2000);
+      }
+    }
   }, []);
 
   const fetchPH = useCallback(async () => {
@@ -136,94 +162,93 @@ export default function App() {
   const healPowerHub = async () => {
     if (healing) return;
     setHealing(true);
-    setRecoveryStep(1); // Stage 1: Inspection
-    setHealLog([`[${ts()}] 🚨 Initiating PowerHub recovery...`]);
+    setRecoveryStep(1);
+    setHealLog(p => [...(p.length ? p : []), `[${ts()}] 🚨 Initiating PowerHub recovery...`]);
     
     try {
       setHealLog(p => [...p, `[${ts()}] 🔍 Inspecting container health and logs...`]);
       await new Promise(r => setTimeout(r, 500));
       
-      setRecoveryStep(2); // Stage 2: Restart Action
-      const res = await apiFetch('/api/powerhub/heal', { method:'POST' });
+      setRecoveryStep(2);
+      let res;
+      try {
+        res = await apiFetch('/api/powerhub/heal', { method:'POST' });
+      } catch {
+        // Backend unreachable — mark as pipeline fallback immediately
+        setRecoveryStep(-1);
+        setHealLog(p => [...p, `[${ts()}] ⚠️  Backend unreachable — will retry when reconnected`]);
+        setHealing(false);
+        return;
+      }
       
       if (res.restarted?.length) {
         setHealLog(p => [...p, `[${ts()}] 🔄 Restarted container: ${res.restarted.join(', ')}`]);
         setHealLog(p => [...p, `[${ts()}] ⏳ Verifying container startup sequence...`]);
-        
-        setRecoveryStep(3); // Stage 3: Startup Verification
+        setRecoveryStep(3);
         await new Promise(r => setTimeout(r, 600));
         setHealLog(p => [...p, `[${ts()}] ⚡ Database connection hooks validating...`]);
-        
-        setRecoveryStep(4); // Stage 4: Database Validation
+        setRecoveryStep(4);
         await new Promise(r => setTimeout(r, 600));
         setHealLog(p => [...p, `[${ts()}] 🩺 Running HTTP status probes...`]);
-        
-        setRecoveryStep(5); // Stage 5: Probing
+        setRecoveryStep(5);
         await new Promise(r => setTimeout(r, 500));
-        await fetchPH();
+        try { await fetchPH(); } catch {}
         setHealLog(p => [...p, `[${ts()}] ✅ Recovery complete — PowerHub is back online!`]);
-        setRecoveryStep(6); // Stage 6: Success
+        setRecoveryStep(6);
       } else if (res.pipelineTriggered) {
-        setRecoveryStep(-1); // Stage -1: Pipeline Fallback
+        setRecoveryStep(-1);
         setHealLog(p => [...p, `[${ts()}] 🚀 Container restart failed → triggering pipeline rebuild`]);
-        setPipeLogs([]); setLogOffset(0); await fetchPipeline();
+        setPipeLogs([]); setLogOffset(0);
+        try { await fetchPipeline(); } catch {}
         setHealLog(p => [...p, `[${ts()}] 🏗️  Pipeline rebuild in progress...`]);
       } else {
         setHealLog(p => [...p, `[${ts()}] ✅ All PowerHub services are already running.`]);
-        setRecoveryStep(6); // Success
+        setRecoveryStep(6);
       }
-    } catch {
-      setRecoveryStep(-1); // Stage -1: Pipeline Fallback
-      setHealLog(p => [...p, `[${ts()}] ⚠️  Direct heal failed → triggering full pipeline rebuild`]);
-      try {
-        setPipeLogs([]); setLogOffset(0);
-        await apiFetch('/api/pipeline/trigger', { method:'POST' });
-        fetchPipeline();
-        setHealLog(p => [...p, `[${ts()}] 🚀 Pipeline triggered — rebuilding PowerHub from source`]);
-      } catch { setHealLog(p => [...p, `[${ts()}] ❌ Pipeline trigger also failed`]); }
+    } catch (err) {
+      setRecoveryStep(-1);
+      setHealLog(p => [...p, `[${ts()}] ⚠️  Recovery error: ${err?.message || 'Unknown'}`]);
+    } finally {
+      setHealing(false);
     }
-    setHealing(false);
   };
 
   const simulateCrash = async () => {
     if (crashing || healing) return;
     setCrashing(true);
-    setRecoveryStep(0); // Reset recovery step when a crash occurs
+    setRecoveryStep(0);
     setHealLog([`[${ts()}] 💥 CRASH SIMULATION — targeting: clonecloud-${crashTarget}`]);
     try {
       setHealLog(p => [...p, `[${ts()}] 🔴 Stopping container clonecloud-${crashTarget}...`]);
-      const res = await apiFetch('/api/powerhub/crash-simulate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ service: crashTarget }),
-      });
+      let res;
+      try {
+        res = await apiFetch('/api/powerhub/crash-simulate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ service: crashTarget }),
+        });
+      } catch {
+        // Backend timeout or network error — treat as simulated crash
+        res = { mode: 'simulation (backend unreachable)' };
+      }
       
-      const isSim = res.mode === 'simulation';
-      
-      setHealLog(p => [
-        ...p,
-        `[${ts()}] 💀 Container stopped successfully (${isSim ? 'Simulation' : 'Real Container'})`
-      ]);
+      const isSim = res.mode !== 'docker';
+      setHealLog(p => [...p, `[${ts()}] 💀 Container stopped (${isSim ? 'Simulation' : 'Real Container'})`]);
       setHealLog(p => [...p, `[${ts()}] ⚡ Watchdog registered failure. Outage declared.`]);
       if (!autoHeal) {
         setHealLog(p => [...p, `[${ts()}] ℹ️  Auto-Self-Healing is DISABLED. Service will remain OFFLINE.`]);
       }
       
       await new Promise(r => setTimeout(r, 500));
-      await fetchPH();
-      setCrashing(false);
-      
-      // Auto-trigger heal sequence only if autoHeal toggle is enabled
-      if (autoHeal) {
-        await healPowerHub();
-      }
-    } catch {
-      setHealLog(p => [...p, `[${ts()}] 🔴 Marking ${crashTarget} as DOWN`]);
-      await new Promise(r => setTimeout(r, 500));
-      setHealLog(p => [...p, `[${ts()}] ⚡ Auto-recovery watchdog alert triggered`]);
+      try { await fetchPH(); } catch {}
+    } catch (err) {
+      setHealLog(p => [...p, `[${ts()}] 🔴 Crash simulation error: ${err?.message || 'Unknown'}`]);
+    } finally {
       setCrashing(false);
       if (autoHeal) {
-        await healPowerHub();
+        // Small delay before heal to let state settle
+        await new Promise(r => setTimeout(r, 300));
+        healPowerHub().catch(() => {});
       }
     }
   };
@@ -290,6 +315,20 @@ export default function App() {
           Open PowerHub <ExternalLink size={13}/>
         </a>
       </header>
+
+      {/* ══ RECONNECTING BANNER ══════════════════════════════════ */}
+      {reconnecting && (
+        <div style={{
+          display:'flex', alignItems:'center', gap:'10px',
+          padding:'10px 20px', background:'rgba(245,158,11,0.12)',
+          borderBottom:'1px solid rgba(245,158,11,0.25)',
+          fontSize:'13px', color:'var(--amber)'
+        }}>
+          <RefreshCw size={14} className="spin"/>
+          <strong>Backend unreachable</strong>
+          <span style={{opacity:.7}}>— Frontend is still running. Reconnecting to API automatically...</span>
+        </div>
+      )}
 
       {/* ══ ALERT BANNER ════════════════════════════════════════ */}
       {!phHealthy && (
